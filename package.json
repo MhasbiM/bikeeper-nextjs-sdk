@@ -1,8 +1,27 @@
 {
   "name": "bikeeper-nextjs-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bikeeper error tracking + APM SDK for Next.js (App Router)",
+  "keywords": [
+    "bikeeper",
+    "nextjs",
+    "next",
+    "error-tracking",
+    "apm",
+    "monitoring",
+    "observability",
+    "tracing"
+  ],
   "license": "MIT",
+  "author": "MhasbiM",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MhasbiM/bikeeper-nextjs-sdk.git"
+  },
+  "homepage": "https://github.com/MhasbiM/bikeeper-nextjs-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/MhasbiM/bikeeper-nextjs-sdk/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -11,6 +30,7 @@
   "files": [
     "dist"
   ],
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

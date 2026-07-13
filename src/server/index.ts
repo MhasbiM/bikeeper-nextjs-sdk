@@ -169,6 +169,17 @@ export function withRouteHandler<A extends unknown[]>(
           try {
             const res = await handler(req, ...rest)
             span.setHttpStatus(res.status)
+            // Two distinct capture paths, matching bikeeperfiber/bikeeperecho:
+            // a thrown error (below) and a handler that returns a 5xx
+            // Response without throwing (e.g. Response.json(..., {status:
+            // 500})) — the far more common pattern in Next.js Route
+            // Handlers, so this must be captured too, not just panics.
+            if (res.status >= 500) {
+              c.captureMessage(`unhandled ${res.status} response`, 'error', {
+                tags: { route: pathname, method: req.method, 'http.status_code': String(res.status) },
+                url: pathname,
+              })
+            }
             return res
           } catch (err) {
             c.captureException(err, { tags: { route: pathname, method: req.method }, url: pathname }, false)
