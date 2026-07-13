@@ -15,7 +15,7 @@ export type { ServerOptions } from '../core/options'
 export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
-export type { NextRequestInfo, RequestErrorContext } from './instrumentation'
+export type { NextRequestInfo, RequestErrorContext } from '../core/instrumentation-types'
 
 let client: BikeeperClient | undefined
 

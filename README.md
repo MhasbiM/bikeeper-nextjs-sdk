@@ -48,8 +48,23 @@ export async function register() {
   }
 }
 
-// Also catches React Server Component render errors — the only place that can.
-export { onRequestError } from 'bikeeper-nextjs-sdk/server'
+// Also catches React Server Component render errors — the only place that
+// can. IMPORTANT: don't write `export { onRequestError } from
+// 'bikeeper-nextjs-sdk/server'` here — that's a static re-export with no
+// runtime guard, so it drags the ENTIRE /server module (and its Node-only
+// AsyncLocalStorage import) into the Edge compilation of this file too,
+// which crashes every request through middleware.ts with "Runtime
+// ReferenceError: __import_unsupported is not defined". Dynamically import
+// the right runtime's implementation instead, exactly like register() does:
+export async function onRequestError(
+  ...args: Parameters<typeof import('bikeeper-nextjs-sdk/server').onRequestError>
+) {
+  const Bikeeper =
+    process.env.NEXT_RUNTIME === 'edge'
+      ? await import('bikeeper-nextjs-sdk/edge')
+      : await import('bikeeper-nextjs-sdk/server')
+  await Bikeeper.onRequestError(...args)
+}
 ```
 
 ## 2. Route Handlers & Server Actions
@@ -232,11 +247,16 @@ starts sending performance data.
 - Route Handler spans use the request's actual pathname, not the route
   *pattern* (`/api/orders/123` rather than `/api/orders/[id]`) — dynamic
   segments won't automatically group in the Performance view.
-- The browser scope/span store is a single module-scoped variable, not true
-  per-async-chain isolation — fine for one traced operation at a time (a
-  page load, one fetch), but two concurrently-awaited traced operations on
-  the same page can misattribute child spans or scope mutations. Server/Edge
-  use `AsyncLocalStorage` and don't have this limitation.
+- The browser **and** Edge (`/edge`, e.g. `middleware.ts`) scope/span store is
+  a single module-scoped variable, not true per-async-chain isolation — fine
+  for one traced operation at a time, but two concurrently-awaited traced
+  operations can misattribute child spans or scope mutations. Edge doesn't
+  use `AsyncLocalStorage` because `node:async_hooks` isn't reliably supported
+  across edge bundlers (Turbopack's edge target throws
+  `__import_unsupported is not defined` at runtime if it's imported — a hard
+  crash, not a build warning). Only `/server` (Node.js runtime — Route
+  Handlers, Server Actions, `instrumentation.ts`'s nodejs branch) uses
+  `AsyncLocalStorage` and has true per-request isolation.
 - `user`/`extra` fields are sent but currently dropped by the Bikeeper
   backend's ingest endpoint (see the Scope section above) — `tags`,
   `breadcrumbs`, and `http_request` are unaffected.

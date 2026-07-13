@@ -1,4 +1,4 @@
-import { AsyncHubStore } from '../core/async-hub-store'
+import { SimpleHubStore } from '../core/simple-hub-store'
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
 import { httpRequestInfo } from '../core/http-context'
 import type { ServerOptions } from '../core/options'
@@ -12,6 +12,7 @@ export type { ServerOptions } from '../core/options'
 export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
+export type { NextRequestInfo, RequestErrorContext } from '../core/instrumentation-types'
 
 let client: BikeeperClient | undefined
 
@@ -33,7 +34,7 @@ export function init(options: ServerOptions): void {
       projectId: options.projectId,
       timeoutMs: options.timeoutMs,
     }),
-    hubStore: new AsyncHubStore(),
+    hubStore: new SimpleHubStore(),
     environment: options.environment,
     release: options.release,
     tracesSampleRate: options.tracesSampleRate,
@@ -168,4 +169,39 @@ export function withMiddleware<A extends unknown[], R>(middleware: (...args: A) 
 
 function isFetchRequest(value: unknown): value is Request {
   return typeof value === 'object' && value !== null && typeof (value as Request).headers?.forEach === 'function'
+}
+
+/** Edge-runtime counterpart of the server entry point's onRequestError —
+ * needed because Next.js's instrumentation.ts is compiled separately per
+ * runtime, but a plain `export { onRequestError } from
+ * "bikeeper-nextjs-sdk/server"` at the top of instrumentation.ts is a
+ * static re-export with no runtime guard, so it drags the ENTIRE /server
+ * module (and its Node-only AsyncLocalStorage import) into the edge
+ * compilation too. Select between this and the /server version inside your
+ * own onRequestError wrapper, gated on process.env.NEXT_RUNTIME — see the
+ * README's instrumentation.ts example. */
+export async function onRequestError(
+  error: unknown,
+  request: { path: string; method: string; headers: Record<string, string> },
+  context: { routerKind: string; routePath: string; routeType: string },
+): Promise<void> {
+  const c = requireClient()
+  if (!c) return
+  await c.withScope(async (scope) => {
+    scope.setHTTPContext({ method: request.method, url: request.path, headers: request.headers })
+    c.captureException(
+      error,
+      {
+        tags: {
+          route_path: context.routePath,
+          route_type: context.routeType,
+          router_kind: context.routerKind,
+          method: request.method,
+        },
+        url: request.path,
+      },
+      false,
+    )
+    await c.flush(1000)
+  })
 }
