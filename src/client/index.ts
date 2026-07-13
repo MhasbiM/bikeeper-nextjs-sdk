@@ -1,6 +1,7 @@
 'use client'
 
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
+import { globalSingleton } from '../core/global-singleton'
 import { DEFAULT_TUNNEL_URL, type ClientOptions } from '../core/options'
 import { SimpleHubStore } from '../core/simple-hub-store'
 import type { BreadcrumbInput, Scope } from '../core/scope'
@@ -17,8 +18,12 @@ export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
 
-let client: BikeeperClient | undefined
-let installed = false
+// globalThis-backed (not a plain module variable) because Next.js
+// code-splits the client bundle per route too — a component in one chunk
+// calling captureException could otherwise see a different module instance
+// than the one init() ran in. See core/global-singleton.ts.
+const clientStore = globalSingleton<BikeeperClient>('__bikeeper_client__')
+const installedStore = globalSingleton<boolean>('__bikeeper_client_handlers_installed__')
 
 /** Initializes the browser SDK. Call once, as early as possible — e.g. in a
  * top-level Client Component rendered from your root layout, or an
@@ -26,25 +31,27 @@ let installed = false
  * supports it. Installs window-level handlers for uncaught errors and
  * unhandled promise rejections. */
 export function init(options: ClientOptions = {}): void {
-  if (client) return
-  client = new BikeeperClient({
-    transport: new TunnelTransport({ tunnelUrl: options.tunnelUrl ?? DEFAULT_TUNNEL_URL }),
-    hubStore: new SimpleHubStore(),
-    environment: options.environment,
-    release: options.release,
-    tracesSampleRate: options.tracesSampleRate,
-    enableLogging: options.enableLogging,
-    debug: options.debug,
-    beforeSend: options.beforeSend,
-    onError: options.onError,
-    baseContexts: browserContexts(),
-  })
+  if (clientStore.get()) return
+  clientStore.set(
+    new BikeeperClient({
+      transport: new TunnelTransport({ tunnelUrl: options.tunnelUrl ?? DEFAULT_TUNNEL_URL }),
+      hubStore: new SimpleHubStore(),
+      environment: options.environment,
+      release: options.release,
+      tracesSampleRate: options.tracesSampleRate,
+      enableLogging: options.enableLogging,
+      debug: options.debug,
+      beforeSend: options.beforeSend,
+      onError: options.onError,
+      baseContexts: browserContexts(),
+    }),
+  )
   installGlobalHandlers()
 }
 
 function installGlobalHandlers(): void {
-  if (installed || typeof window === 'undefined') return
-  installed = true
+  if (installedStore.get() || typeof window === 'undefined') return
+  installedStore.set(true)
 
   window.addEventListener('error', (event: ErrorEvent) => {
     captureException(event.error ?? event.message, { level: 'error', url: window.location.href }, false)
@@ -56,6 +63,7 @@ function installGlobalHandlers(): void {
 }
 
 function requireClient(): BikeeperClient | undefined {
+  const client = clientStore.get()
   if (!client && typeof console !== 'undefined') {
     console.warn('[bikeeper] captured before init() was called — call init() first, event dropped')
   }
@@ -151,9 +159,9 @@ export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: 
 }
 
 export function getActiveSpan(): Span | undefined {
-  return client?.getActiveSpan()
+  return clientStore.get()?.getActiveSpan()
 }
 
 export function flush(timeoutMs?: number): Promise<void> {
-  return client?.flush(timeoutMs) ?? Promise.resolve()
+  return clientStore.get()?.flush(timeoutMs) ?? Promise.resolve()
 }

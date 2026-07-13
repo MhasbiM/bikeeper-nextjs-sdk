@@ -2,6 +2,7 @@ import 'server-only'
 
 import { AsyncHubStore } from '../core/async-hub-store'
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
+import { globalSingleton } from '../core/global-singleton'
 import { httpRequestInfo } from '../core/http-context'
 import type { ServerOptions } from '../core/options'
 import type { BreadcrumbInput, Scope } from '../core/scope'
@@ -17,36 +18,39 @@ export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
 export type { NextRequestInfo, RequestErrorContext } from '../core/instrumentation-types'
 
-let client: BikeeperClient | undefined
+const clientStore = globalSingleton<BikeeperClient>('__bikeeper_server_client__')
 
 /** Initializes the server-side (Node.js runtime) SDK. Call this from
  * `instrumentation.ts`'s `register()`, gated on
  * `process.env.NEXT_RUNTIME === 'nodejs'` — this module holds your real
  * Bikeeper credentials and must never be imported from client code. */
 export function init(options: ServerOptions): void {
-  if (client) return
-  client = new BikeeperClient({
-    transport: new DirectTransport({
-      endpoint: options.endpoint,
-      clientId: options.clientId,
-      clientSecret: options.clientSecret,
-      projectId: options.projectId,
-      timeoutMs: options.timeoutMs,
+  if (clientStore.get()) return
+  clientStore.set(
+    new BikeeperClient({
+      transport: new DirectTransport({
+        endpoint: options.endpoint,
+        clientId: options.clientId,
+        clientSecret: options.clientSecret,
+        projectId: options.projectId,
+        timeoutMs: options.timeoutMs,
+      }),
+      hubStore: new AsyncHubStore(),
+      environment: options.environment,
+      release: options.release,
+      tracesSampleRate: options.tracesSampleRate,
+      enableLogging: options.enableLogging,
+      serverName: options.serverName,
+      debug: options.debug,
+      beforeSend: options.beforeSend,
+      onError: options.onError,
+      baseContexts: nodeContexts(),
     }),
-    hubStore: new AsyncHubStore(),
-    environment: options.environment,
-    release: options.release,
-    tracesSampleRate: options.tracesSampleRate,
-    enableLogging: options.enableLogging,
-    serverName: options.serverName,
-    debug: options.debug,
-    beforeSend: options.beforeSend,
-    onError: options.onError,
-    baseContexts: nodeContexts(),
-  })
+  )
 }
 
 function requireClient(): BikeeperClient | undefined {
+  const client = clientStore.get()
   if (!client && typeof console !== 'undefined') {
     console.warn('[bikeeper] captured before init() was called — call init() from instrumentation.ts first, event dropped')
   }
@@ -140,11 +144,11 @@ export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: 
 }
 
 export function getActiveSpan(): Span | undefined {
-  return client?.getActiveSpan()
+  return clientStore.get()?.getActiveSpan()
 }
 
 export function flush(timeoutMs?: number): Promise<void> {
-  return client?.flush(timeoutMs) ?? Promise.resolve()
+  return clientStore.get()?.flush(timeoutMs) ?? Promise.resolve()
 }
 
 /** Wraps an App Router Route Handler (`export async function GET(req) {...}`
