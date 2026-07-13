@@ -156,6 +156,70 @@ await startSpan('db.query', { description: 'GetOrder' }, async (span) => {
 })
 ```
 
+## Scope: tags, user, breadcrumbs, extra context
+
+Every incoming request handled through `withRouteHandler`/`withServerAction`/
+`withMiddleware`/`onRequestError` gets its own **isolated scope** — `setTag`,
+`setUser`, `addBreadcrumb`, etc. called while handling one request never
+leak into a concurrent request, even though they all run in the same
+process (this mirrors bikeeper-go-sdk's per-request Hub; a design with one
+shared mutable tag map would race across concurrent requests).
+
+```ts
+import { setTag, setUser, addBreadcrumb, setExtra, withScope } from 'bikeeper-nextjs-sdk/server'
+
+setUser({ id: user.id, email: user.email })
+setTag('feature', 'checkout')
+addBreadcrumb({ category: 'payment', message: 'charge attempted', level: 'info' })
+setExtra('cart', { itemCount: cart.items.length })
+
+// Scope a tag to just one operation, without it leaking past this call:
+await withScope((scope) => {
+  scope.setTag('sub_operation', 'refund')
+  return processRefund(orderId)
+})
+```
+
+`setHTTPContext` is called for you automatically by `withRouteHandler` and
+`withMiddleware` (method/URL/query string/headers, with `Authorization`,
+`Cookie`, `Set-Cookie`, and the Bikeeper secret header stripped) — call it
+yourself only if you need to override it.
+
+> **Backend note**: `user` and `extra` are sent on every event for wire
+> parity with bikeeper-go-sdk, but the Bikeeper backend's ingest endpoint
+> doesn't read those fields yet as of this writing — they won't appear in
+> the dashboard until that lands server-side. `tags`, `breadcrumbs`, and
+> `http_request` are already fully supported.
+
+## Structured logging
+
+Gated by `enableLogging` (default `false`, matching bikeeper-go-sdk): off,
+`logger.*` calls fall through to `captureMessage`; on, they're sent as
+`LogRecord`s to `/api/v1/logs` instead.
+
+```ts
+import { logger } from 'bikeeper-nextjs-sdk/server'
+
+logger.info().withTag('order_id', orderId).emit('order created')
+logger.error().emit('payment gateway timeout')
+```
+
+## Raw event capture
+
+For full control over the payload instead of the scope-driven
+`captureException`/`captureMessage` helpers:
+
+```ts
+import { captureEvent } from 'bikeeper-nextjs-sdk/server'
+
+await captureEvent({
+  id: crypto.randomUUID(),
+  level: 'warning',
+  message: 'custom event',
+  timestamp: new Date().toISOString(),
+})
+```
+
 ## Sampling
 
 `tracesSampleRate` (0–1) is head-based: rolled once per trace, inherited by
@@ -168,8 +232,11 @@ starts sending performance data.
 - Route Handler spans use the request's actual pathname, not the route
   *pattern* (`/api/orders/123` rather than `/api/orders/[id]`) — dynamic
   segments won't automatically group in the Performance view.
-- The browser span store is a single module-scoped variable, not true
+- The browser scope/span store is a single module-scoped variable, not true
   per-async-chain isolation — fine for one traced operation at a time (a
   page load, one fetch), but two concurrently-awaited traced operations on
-  the same page can misattribute child spans. Server/Edge use
-  `AsyncLocalStorage` and don't have this limitation.
+  the same page can misattribute child spans or scope mutations. Server/Edge
+  use `AsyncLocalStorage` and don't have this limitation.
+- `user`/`extra` fields are sent but currently dropped by the Bikeeper
+  backend's ingest endpoint (see the Scope section above) — `tags`,
+  `breadcrumbs`, and `http_request` are unaffected.

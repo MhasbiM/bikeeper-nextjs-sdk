@@ -132,6 +132,12 @@ export interface EventPayload {
   exception?: ExceptionValue
   fingerprint?: string[]
   breadcrumbs?: Breadcrumb[]
+  /** Sent for wire parity with bikeeper-go-sdk's Event.User — as of this
+   * writing the Bikeeper backend's ingest DTO doesn't read this field yet,
+   * so it won't show up in the dashboard until that lands server-side. */
+  user?: UserInfo
+  /** Same caveat as `user` above — sent, currently dropped server-side. */
+  extra?: Record<string, Record<string, unknown>>
 }
 
 /** Wire shape POSTed to /api/v1/logs. */

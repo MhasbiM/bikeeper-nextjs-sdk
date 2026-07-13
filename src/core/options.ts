@@ -18,6 +18,12 @@ export interface ServerOptions {
    * package alone should never silently start sending performance data. */
   tracesSampleRate?: number
   timeoutMs?: number
+  /** Gates the Logger (`debug()/info()/warn()/error()/fatal()`): true sends
+   * to /api/v1/logs as a LogRecord; false (default) falls through to
+   * captureMessage — matches bikeeper-go-sdk's Options.EnableLogging. */
+  enableLogging?: boolean
+  /** Included on LogRecord payloads when enableLogging is on. */
+  serverName?: string
   debug?: boolean
   /** Mutate or drop (return null) an event right before it's sent. */
   beforeSend?: (event: EventPayload) => EventPayload | null
@@ -35,6 +41,8 @@ export interface ClientOptions {
   environment?: string
   release?: string
   tracesSampleRate?: number
+  /** Gates the Logger the same way as ServerOptions.enableLogging. */
+  enableLogging?: boolean
   debug?: boolean
   beforeSend?: (event: EventPayload) => EventPayload | null
   onError?: (err: unknown) => void

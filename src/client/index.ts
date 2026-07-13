@@ -1,19 +1,21 @@
 'use client'
 
-import { BikeeperClient } from '../core/client'
+import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
 import { DEFAULT_TUNNEL_URL, type ClientOptions } from '../core/options'
-import { SimpleSpanStore } from '../core/simple-span-store'
+import { SimpleHubStore } from '../core/simple-hub-store'
+import type { BreadcrumbInput, Scope } from '../core/scope'
 import { Span, type SpanOptions } from '../core/span'
 import { TunnelTransport } from '../core/transport'
-import type { Level } from '../core/types'
+import type { Level, UserInfo } from '../core/types'
 import { browserContexts } from './browser-context'
 
 export { BikeeperErrorBoundary } from './error-boundary'
 export type { BikeeperErrorBoundaryProps } from './error-boundary'
 export type { CaptureExtra } from '../core/client'
 export type { ClientOptions } from '../core/options'
+export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
-export type { SpanOptions } from '../core/span'
+export type { SpanOptions, TransactionSource } from '../core/span'
 
 let client: BikeeperClient | undefined
 let installed = false
@@ -27,10 +29,11 @@ export function init(options: ClientOptions = {}): void {
   if (client) return
   client = new BikeeperClient({
     transport: new TunnelTransport({ tunnelUrl: options.tunnelUrl ?? DEFAULT_TUNNEL_URL }),
-    spanStore: new SimpleSpanStore(),
+    hubStore: new SimpleHubStore(),
     environment: options.environment,
     release: options.release,
     tracesSampleRate: options.tracesSampleRate,
+    enableLogging: options.enableLogging,
     debug: options.debug,
     beforeSend: options.beforeSend,
     onError: options.onError,
@@ -71,8 +74,59 @@ export function captureMessage(message: string, level: Level = 'info', extra?: {
   requireClient()?.captureMessage(message, level, extra)
 }
 
+export function captureEvent(event: Parameters<BikeeperClient['captureEvent']>[0]): Promise<void> {
+  return requireClient()?.captureEvent(event) ?? Promise.resolve()
+}
+
 export function setTag(key: string, value: string): void {
   requireClient()?.setTag(key, value)
+}
+
+export function removeTag(key: string): void {
+  requireClient()?.removeTag(key)
+}
+
+export function setUser(user: UserInfo | undefined): void {
+  requireClient()?.setUser(user)
+}
+
+export function setExtra(key: string, ctx: Record<string, unknown>): void {
+  requireClient()?.setExtra(key, ctx)
+}
+
+export function setFingerprint(...parts: string[]): void {
+  requireClient()?.setFingerprint(...parts)
+}
+
+export function addBreadcrumb(input: BreadcrumbInput): void {
+  requireClient()?.addBreadcrumb(input)
+}
+
+/** Runs `fn` against an isolated clone of the current scope — see the
+ * server entry point's withScope doc for the same semantics. Less critical
+ * in the browser (one scope per tab already, not per-concurrent-request),
+ * but still useful to scope a tag/breadcrumb to one operation. */
+export function withScope<T>(fn: (scope: Scope) => T): T {
+  const c = requireClient()
+  if (!c) return fn(undefined as unknown as Scope)
+  return c.withScope(fn)
+}
+
+/** Structured logging — gated by ClientOptions.enableLogging: on, sends to
+ * /api/v1/logs (via the tunnel); off (default), falls through to
+ * captureMessage. */
+export const logger = {
+  debug: (): LogEntryBuilder => requireLogEntry('debug'),
+  info: (): LogEntryBuilder => requireLogEntry('info'),
+  warn: (): LogEntryBuilder => requireLogEntry('warn'),
+  error: (): LogEntryBuilder => requireLogEntry('error'),
+  fatal: (): LogEntryBuilder => requireLogEntry('fatal'),
+}
+
+function requireLogEntry(level: LogLevelName): LogEntryBuilder {
+  const c = requireClient()
+  if (!c) return new LogEntryBuilder(level, () => {})
+  return c[level]()
 }
 
 export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => T | Promise<T>): Promise<T> {
@@ -84,6 +138,16 @@ export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => 
     return Promise.resolve(fn(noop)).finally(() => noop.finish())
   }
   return c.startSpan(op, opts, fn)
+}
+
+/** Always starts a new trace, ignoring any currently active span. */
+export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: Span) => T | Promise<T>): Promise<T> {
+  const c = requireClient()
+  if (!c) {
+    const noop = Span.createRoot(name, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+    return Promise.resolve(fn(noop)).finally(() => noop.finish())
+  }
+  return c.startTransaction(name, opts, fn)
 }
 
 export function getActiveSpan(): Span | undefined {

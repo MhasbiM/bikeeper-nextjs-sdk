@@ -2,16 +2,6 @@ import type { SDKInfo, SpanPayload, SpanStatus, Tag, TransactionPayload } from '
 import { newSpanId, newTraceId } from './util'
 import type { Transport } from './transport'
 
-/** Where the "currently active span" is tracked. Node/Edge use an
- * AsyncLocalStorage-backed implementation (true per-request isolation even
- * across concurrent requests); the browser uses a simple module-scoped
- * variable (single-threaded main thread — see core/simple-span-store.ts for
- * the documented tradeoff). */
-export interface SpanContextStore {
-  getActive(): Span | undefined
-  runWithActive<T>(span: Span, fn: () => T): T
-}
-
 interface TransactionState {
   root: Span
   children: Span[]
@@ -20,9 +10,16 @@ interface TransactionState {
   sdk: SDKInfo
 }
 
+export type TransactionSource = 'url' | 'route' | 'view' | 'task' | 'custom'
+
 export interface SpanOptions {
   description?: string
   tags?: Record<string, string>
+  /** Only meaningful on a root span (transaction) — mirrors
+   * bikeeper-go-sdk's WithTransactionSource. Not part of the wire payload
+   * (Go's own TransactionPayload doesn't serialize it either); recorded as
+   * a `transaction_source` tag so it's still visible on the event. */
+  transactionSource?: TransactionSource
 }
 
 function toTagList(tags: Record<string, string>): Tag[] | undefined {
@@ -49,6 +46,7 @@ export class Span {
     this.op = op
     this.description = opts?.description
     if (opts?.tags) Object.assign(this.tags, opts.tags)
+    if (opts?.transactionSource) this.tags.transaction_source = opts.transactionSource
     this.startMs = Date.now()
     this.spanId = newSpanId()
 

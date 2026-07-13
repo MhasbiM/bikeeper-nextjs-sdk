@@ -1,17 +1,20 @@
 import 'server-only'
 
-import { AsyncSpanStore } from '../core/async-span-store'
-import { BikeeperClient } from '../core/client'
+import { AsyncHubStore } from '../core/async-hub-store'
+import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
+import { httpRequestInfo } from '../core/http-context'
 import type { ServerOptions } from '../core/options'
+import type { BreadcrumbInput, Scope } from '../core/scope'
 import { Span, type SpanOptions } from '../core/span'
 import { DirectTransport } from '../core/transport'
-import type { Level } from '../core/types'
+import type { Level, UserInfo } from '../core/types'
 import { nodeContexts } from './node-context'
 
 export type { CaptureExtra } from '../core/client'
 export type { ServerOptions } from '../core/options'
+export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
-export type { SpanOptions } from '../core/span'
+export type { SpanOptions, TransactionSource } from '../core/span'
 export type { NextRequestInfo, RequestErrorContext } from './instrumentation'
 
 let client: BikeeperClient | undefined
@@ -30,10 +33,12 @@ export function init(options: ServerOptions): void {
       projectId: options.projectId,
       timeoutMs: options.timeoutMs,
     }),
-    spanStore: new AsyncSpanStore(),
+    hubStore: new AsyncHubStore(),
     environment: options.environment,
     release: options.release,
     tracesSampleRate: options.tracesSampleRate,
+    enableLogging: options.enableLogging,
+    serverName: options.serverName,
     debug: options.debug,
     beforeSend: options.beforeSend,
     onError: options.onError,
@@ -60,8 +65,59 @@ export function captureMessage(message: string, level: Level = 'info', extra?: {
   requireClient()?.captureMessage(message, level, extra)
 }
 
+/** Low-level escape hatch — send a fully-built EventPayload yourself
+ * instead of using captureException/captureMessage. */
+export function captureEvent(event: Parameters<BikeeperClient['captureEvent']>[0]): Promise<void> {
+  return requireClient()?.captureEvent(event) ?? Promise.resolve()
+}
+
 export function setTag(key: string, value: string): void {
   requireClient()?.setTag(key, value)
+}
+
+export function removeTag(key: string): void {
+  requireClient()?.removeTag(key)
+}
+
+export function setUser(user: UserInfo | undefined): void {
+  requireClient()?.setUser(user)
+}
+
+export function setExtra(key: string, ctx: Record<string, unknown>): void {
+  requireClient()?.setExtra(key, ctx)
+}
+
+export function setFingerprint(...parts: string[]): void {
+  requireClient()?.setFingerprint(...parts)
+}
+
+export function addBreadcrumb(input: BreadcrumbInput): void {
+  requireClient()?.addBreadcrumb(input)
+}
+
+/** Runs `fn` against an isolated clone of the current scope — tags/user/
+ * breadcrumbs set inside never leak out once it returns. Use this to scope
+ * ad-hoc context to one operation without affecting the enclosing request. */
+export function withScope<T>(fn: (scope: Scope) => T): T {
+  const c = requireClient()
+  if (!c) return fn(undefined as unknown as Scope)
+  return c.withScope(fn)
+}
+
+/** Structured logging — gated by ServerOptions.enableLogging: on, sends to
+ * /api/v1/logs; off (default), falls through to captureMessage. */
+export const logger = {
+  debug: (): LogEntryBuilder => requireLogEntry('debug'),
+  info: (): LogEntryBuilder => requireLogEntry('info'),
+  warn: (): LogEntryBuilder => requireLogEntry('warn'),
+  error: (): LogEntryBuilder => requireLogEntry('error'),
+  fatal: (): LogEntryBuilder => requireLogEntry('fatal'),
+}
+
+function requireLogEntry(level: LogLevelName): LogEntryBuilder {
+  const c = requireClient()
+  if (!c) return new LogEntryBuilder(level, () => {})
+  return c[level]()
 }
 
 export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => T | Promise<T>): Promise<T> {
@@ -73,6 +129,16 @@ export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => 
   return c.startSpan(op, opts, fn)
 }
 
+/** Always starts a new trace, ignoring any currently active span. */
+export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: Span) => T | Promise<T>): Promise<T> {
+  const c = requireClient()
+  if (!c) {
+    const noop = Span.createRoot(name, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+    return Promise.resolve(fn(noop)).finally(() => noop.finish())
+  }
+  return c.startTransaction(name, opts, fn)
+}
+
 export function getActiveSpan(): Span | undefined {
   return client?.getActiveSpan()
 }
@@ -82,9 +148,11 @@ export function flush(timeoutMs?: number): Promise<void> {
 }
 
 /** Wraps an App Router Route Handler (`export async function GET(req) {...}`
- * in app/**\/route.ts): reports thrown errors (then re-throws, so Next.js's
- * own error handling still runs) and wraps the call in an `http.server` span
- * named after the request method + pathname. */
+ * in app/**\/route.ts): establishes a fresh, isolated scope for this
+ * request (so setTag/setUser/addBreadcrumb calls made while handling it
+ * never leak into a concurrent request), auto-attaches HTTP request context,
+ * reports thrown errors (then re-throws, so Next.js's own error handling
+ * still runs), and wraps the call in an `http.server` span. */
 export function withRouteHandler<A extends unknown[]>(
   handler: (req: Request, ...rest: A) => Promise<Response> | Response,
 ): (req: Request, ...rest: A) => Promise<Response> {
@@ -92,38 +160,44 @@ export function withRouteHandler<A extends unknown[]>(
     const c = requireClient()
     if (!c) return handler(req, ...rest)
     const pathname = safePathname(req.url)
-    return c.startSpan(
-      'http.server',
-      { description: `${req.method} ${pathname}`, tags: { 'http.method': req.method, 'http.route': pathname } },
-      async (span) => {
-        try {
-          const res = await handler(req, ...rest)
-          span.setHttpStatus(res.status)
-          return res
-        } catch (err) {
-          c.captureException(err, { tags: { route: pathname, method: req.method }, url: pathname }, false)
-          throw err
-        }
-      },
-    )
+    return c.withScope((scope) => {
+      scope.setHTTPContext(httpRequestInfo(req))
+      return c.startSpan(
+        'http.server',
+        { description: `${req.method} ${pathname}`, tags: { 'http.method': req.method, 'http.route': pathname }, transactionSource: 'route' },
+        async (span) => {
+          try {
+            const res = await handler(req, ...rest)
+            span.setHttpStatus(res.status)
+            return res
+          } catch (err) {
+            c.captureException(err, { tags: { route: pathname, method: req.method }, url: pathname }, false)
+            throw err
+          }
+        },
+      )
+    })
   }
 }
 
-/** Wraps a Server Action: reports thrown errors (then re-throws) and wraps
- * the call in a `server_action` span. `name` is any label you choose (Server
- * Actions have no built-in route/name to read at runtime). */
+/** Wraps a Server Action: establishes a fresh isolated scope, reports
+ * thrown errors (then re-throws), and wraps the call in a `server_action`
+ * span. `name` is any label you choose (Server Actions have no built-in
+ * route/name to read at runtime). */
 export function withServerAction<A extends unknown[], R>(name: string, action: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
   return async (...args: A): Promise<R> => {
     const c = requireClient()
     if (!c) return action(...args)
-    return c.startSpan('server_action', { description: name }, async () => {
-      try {
-        return await action(...args)
-      } catch (err) {
-        c.captureException(err, { tags: { server_action: name } }, false)
-        throw err
-      }
-    })
+    return c.withScope(() =>
+      c.startSpan('server_action', { description: name, transactionSource: 'task' }, async () => {
+        try {
+          return await action(...args)
+        } catch (err) {
+          c.captureException(err, { tags: { server_action: name } }, false)
+          throw err
+        }
+      }),
+    )
   }
 }
 
@@ -148,18 +222,21 @@ export async function onRequestError(
 ): Promise<void> {
   const c = requireClient()
   if (!c) return
-  c.captureException(
-    error,
-    {
-      tags: {
-        route_path: context.routePath,
-        route_type: context.routeType,
-        router_kind: context.routerKind,
-        method: request.method,
+  await c.withScope(async (scope) => {
+    scope.setHTTPContext({ method: request.method, url: request.path, headers: request.headers })
+    c.captureException(
+      error,
+      {
+        tags: {
+          route_path: context.routePath,
+          route_type: context.routeType,
+          router_kind: context.routerKind,
+          method: request.method,
+        },
+        url: request.path,
       },
-      url: request.path,
-    },
-    false,
-  )
-  await c.flush(1000)
+      false,
+    )
+    await c.flush(1000)
+  })
 }
