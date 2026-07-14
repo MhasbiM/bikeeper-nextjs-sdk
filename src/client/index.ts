@@ -158,6 +158,15 @@ export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: 
   return c.startTransaction(name, opts, fn)
 }
 
+/** Manual-lifecycle span for two-phase async flows that don't fit
+ * startSpan's single-callback shape (e.g. an HTTP client's separate
+ * request/response interceptors) — call span.finish() yourself when done. */
+export function startSpanManual(op: string, opts?: SpanOptions): Span {
+  const c = requireClient()
+  if (!c) return Span.createRoot(op, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+  return c.startSpanManual(op, opts)
+}
+
 export function getActiveSpan(): Span | undefined {
   return clientStore.get()?.getActiveSpan()
 }

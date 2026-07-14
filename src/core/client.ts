@@ -273,6 +273,20 @@ export class BikeeperClient {
     return this.runSpan(state, span, fn)
   }
 
+  /** Manual-lifecycle span creation for two-phase async flows that don't
+   * fit startSpan's single-callback shape — e.g. an HTTP client whose
+   * request and response are two separate interceptor callbacks rather
+   * than one wrapped function. The caller is responsible for calling
+   * span.finish() themselves. Unlike startSpan, this does NOT run inside
+   * the hub's "active span" scope, so nested startSpan calls made while
+   * this span is open won't automatically parent to it. */
+  startSpanManual(op: string, opts?: SpanOptions): Span {
+    const state = this.currentState()
+    return state.span
+      ? Span.createChild(op, opts, state.span)
+      : Span.createRoot(op, opts, Math.random() < (this.opts.tracesSampleRate ?? 0), this.opts.transport, SDK_INFO)
+  }
+
   /** Always starts a NEW trace, ignoring any currently active span — unlike
    * startSpan, which joins an in-flight trace as a child when one exists.
    * Mirrors bikeeper-go-sdk's distinct StartTransaction. */

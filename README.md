@@ -171,6 +171,30 @@ await startSpan('db.query', { description: 'GetOrder' }, async (span) => {
 })
 ```
 
+For two-phase async flows that don't fit `startSpan`'s single-callback shape — e.g. an HTTP client library's separate request/response interceptors — use `startSpanManual` and finish it yourself:
+
+```ts
+import { startSpanManual } from 'bikeeper-nextjs-sdk/client'
+
+http.interceptors.request.use((config) => {
+  config.bikeeperSpan = startSpanManual('http.client', { description: `${config.method} ${config.url}` })
+  return config
+})
+
+http.interceptors.response.use(
+  (response) => {
+    response.config.bikeeperSpan?.setHttpStatus(response.status)
+    response.config.bikeeperSpan?.finish()
+    return response
+  },
+  (error) => {
+    error.config?.bikeeperSpan?.setStatus('internal_error')
+    error.config?.bikeeperSpan?.finish()
+    return Promise.reject(error)
+  },
+)
+```
+
 ## Scope: tags, user, breadcrumbs, extra context
 
 Every incoming request handled through `withRouteHandler`/`withServerAction`/

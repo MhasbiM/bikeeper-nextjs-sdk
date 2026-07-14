@@ -1,6 +1,6 @@
 {
   "name": "bikeeper-nextjs-sdk",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Bikeeper error tracking + APM SDK for Next.js (App Router)",
   "keywords": [
     "bikeeper",
