@@ -5,6 +5,7 @@ import type { BreadcrumbInput } from './scope'
 import { Scope } from './scope'
 import { cloneState, type HubState, type HubStore } from './hub-store'
 import { Span, type SpanOptions } from './span'
+import { traceparentFor } from './trace-headers'
 import type { Transport } from './transport'
 import type { Contexts, EventPayload, HTTPRequestInfo, Level, LogRecordPayload, Tag, UserInfo } from './types'
 import { newEventId, nowISO } from './util'
@@ -309,6 +310,15 @@ export class BikeeperClient {
 
   getActiveSpan(): Span | undefined {
     return this.currentState().span
+  }
+
+  /** Headers to attach to an outgoing HTTP call so the receiving service —
+   * if it understands the same W3C traceparent format — continues this
+   * same trace instead of starting a disconnected one. Empty object if
+   * there's no active span (nothing to propagate). */
+  getTraceHeaders(): Record<string, string> {
+    const header = traceparentFor(this.currentState().span)
+    return header ? { traceparent: header } : {}
   }
 
   async flush(timeoutMs = 2000): Promise<void> {

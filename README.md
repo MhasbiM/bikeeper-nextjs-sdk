@@ -67,6 +67,8 @@ export async function onRequestError(
 }
 ```
 
+By default, `init()` in `/server` also registers `process.on('uncaughtException' | 'unhandledRejection', ...)` so errors thrown outside any request context (a background timer, a fire-and-forget promise, anything never wrapped by `withRouteHandler`/`withServerAction`) still get captured instead of crashing silently. An `uncaughtException` is captured, flushed, then the process exits — Node's own guidance is that the process is in an undefined state afterward and must not keep running; `unhandledRejection` is only captured, matching Node's non-fatal-by-default behavior. Set `captureUncaughtExceptions: false` in `init()` to opt out. (Edge has no full `process` event emitter, so this only applies to `/server`.)
+
 ## 2. Route Handlers & Server Actions
 
 ```ts
@@ -194,6 +196,91 @@ http.interceptors.response.use(
   },
 )
 ```
+
+## Distributed tracing
+
+A single user action can span a browser call, your Next.js server, and
+another Bikeeper-instrumented backend (e.g. a Go service using
+bikeeper-go-sdk). By default each hop starts its own disconnected trace. To
+link them into one trace, propagate a
+[W3C `traceparent`](https://www.w3.org/TR/trace-context/) header on the
+outgoing call and read it back on the receiving end.
+
+Attach it to outgoing requests with `getTraceHeaders()` (available from all
+three entry points — returns `{}` if there's no active span, so it's always
+safe to spread):
+
+```ts
+// e.g. an axios request interceptor, browser or server side
+import { getTraceHeaders } from 'bikeeper-nextjs-sdk/client'
+
+http.interceptors.request.use((config) => {
+  Object.assign(config.headers, getTraceHeaders())
+  return config
+})
+```
+
+Incoming `traceparent` headers are already read for you automatically —
+`withRouteHandler` and `withMiddleware` both parse the request's `traceparent`
+header and continue that trace instead of starting a new one, so a browser
+call through `getTraceHeaders()` above into a route wrapped with
+`withRouteHandler` is already one connected trace with no further wiring.
+To continue an incoming trace in your own manual `startSpan`/`startTransaction`
+call, parse the header yourself and pass `continueFrom`:
+
+```ts
+import { parseTraceparent } from 'bikeeper-nextjs-sdk/server' // re-exported from core
+import { startTransaction } from 'bikeeper-nextjs-sdk/server'
+
+const continueFrom = parseTraceparent(req.headers.get('traceparent'))
+await startTransaction('worker.job', { continueFrom }, async (span) => {
+  /* ... */
+})
+```
+
+`continueFrom` is ignored if a locally-active parent span already exists
+(that's already a correctly-nested continuation) — it only takes effect
+when the call would otherwise start a brand-new root trace. A malformed or
+missing header parses to `undefined`, so callers gracefully fall back to
+starting a fresh trace rather than erroring.
+
+## Reliability: retries & offline queueing
+
+Every send (events, logs, transactions) retries up to 3 attempts with
+backoff (0ms, 500ms, 1000ms) before giving up — a transient network blip or
+a momentary 5xx from the Bikeeper backend doesn't drop the event.
+
+The browser transport additionally queues in-memory when it can't reach the
+tunnel: if `navigator.onLine` is already `false`, or a send fails after
+retries, the item is queued (up to 50, dropping the oldest on overflow) and
+flushed automatically once the `online` event fires. This is an **in-memory
+queue only** — a hard page reload during an outage still loses whatever was
+queued (no IndexedDB/localStorage persistence).
+
+## Source maps & releases
+
+Set a `release` identifier (e.g. your git SHA or a semver tag) on both
+`init()` calls so events/spans can be matched to the exact deploy that
+produced them:
+
+```ts
+Bikeeper.init({ /* ... */, release: process.env.NEXT_PUBLIC_APP_RELEASE })
+```
+
+Pipe the same value into your build (e.g. `--build-arg` in Docker, or a CI
+env var baked in at build time) so it's stable across a deploy. Combined
+with `productionBrowserSourceMaps: true` in `next.config.mjs`, this gives
+you readable stack traces for browser errors without exposing the client
+bundle's original source publicly on every request (Next only emits the
+`.map` files alongside the build output; nothing about turning this on
+serves them from a public, unauthenticated route by default beyond what
+Next's own static file serving already does for `.next/static`).
+
+> Bikeeper's backend doesn't yet resolve/store source maps server-side as
+> of this writing — turning this on gets you correctly-mapped stack traces
+> in browser devtools and any tooling that reads the `.map` files directly,
+> but the dashboard itself still shows minified traces until that lands
+> server-side.
 
 ## Scope: tags, user, breadcrumbs, extra context
 

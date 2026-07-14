@@ -172,6 +172,14 @@ export function getActiveSpan(): Span | undefined {
   return clientStore.get()?.getActiveSpan()
 }
 
+/** Headers to attach to an outgoing HTTP call (e.g. an axios/fetch call to
+ * a Bikeeper-instrumented backend) so it continues this same trace instead
+ * of starting a disconnected one — the receiving server's withRouteHandler/
+ * withMiddleware reads this same header on the way in. */
+export function getTraceHeaders(): Record<string, string> {
+  return clientStore.get()?.getTraceHeaders() ?? {}
+}
+
 export function flush(timeoutMs?: number): Promise<void> {
   return clientStore.get()?.flush(timeoutMs) ?? Promise.resolve()
 }

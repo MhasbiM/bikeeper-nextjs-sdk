@@ -1,4 +1,5 @@
 import { SDK_NAME, SDK_VERSION } from './constants'
+import type { IncomingTraceContext } from './trace-headers'
 import type { SDKInfo, SpanPayload, SpanStatus, Tag, TransactionPayload } from './types'
 import { newSpanId, newTraceId } from './util'
 import type { Transport } from './transport'
@@ -21,6 +22,12 @@ export interface SpanOptions {
    * (Go's own TransactionPayload doesn't serialize it either); recorded as
    * a `transaction_source` tag so it's still visible on the event. */
   transactionSource?: TransactionSource
+  /** Continues a distributed trace started elsewhere (e.g. parsed from an
+   * incoming W3C traceparent header) instead of starting a brand new one.
+   * Only takes effect when this call creates a NEW root — ignored if a
+   * locally-active parent span already exists, since that's already a
+   * correctly-nested continuation. */
+  continueFrom?: IncomingTraceContext
 }
 
 function toTagList(tags: Record<string, string>): Tag[] | undefined {
@@ -56,7 +63,8 @@ export class Span {
       this.parentSpanId = parent.spanId
       this.txn = parent.txn
     } else {
-      this.traceId = newTraceId()
+      this.traceId = opts?.continueFrom?.traceId ?? newTraceId()
+      this.parentSpanId = opts?.continueFrom?.parentSpanId
       this.txn = txn ?? { root: this, children: [], sampled: false, sdk: { name: SDK_NAME, version: SDK_VERSION } }
     }
   }

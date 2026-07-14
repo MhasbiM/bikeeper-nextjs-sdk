@@ -32,7 +32,14 @@ function pathFor(kind: WirePayload['kind']): string {
   }
 }
 
-async function postJSON(url: string, body: unknown, headers: Record<string, string>, timeoutMs: number): Promise<void> {
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const MAX_ATTEMPTS = 3 // 1 initial + 2 retries
+const RETRY_BACKOFF_MS = 500 // 500ms, then 1000ms
+
+async function postOnce(url: string, body: unknown, headers: Record<string, string>, timeoutMs: number): Promise<void> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -51,6 +58,24 @@ async function postJSON(url: string, body: unknown, headers: Record<string, stri
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** POSTs with a small retry/backoff for transient failures (network blip,
+ * momentary 5xx from the collector) — covers both DirectTransport and
+ * TunnelTransport. Not a substitute for TunnelTransport's own offline queue
+ * below, which handles a genuinely absent connection, not just a flaky one. */
+async function postJSON(url: string, body: unknown, headers: Record<string, string>, timeoutMs: number): Promise<void> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await delay(RETRY_BACKOFF_MS * attempt)
+    try {
+      await postOnce(url, body, headers, timeoutMs)
+      return
+    } catch (err) {
+      lastErr = err
+    }
+  }
+  throw lastErr
 }
 
 /** Sends directly to the Bikeeper backend using real project credentials.
@@ -77,20 +102,67 @@ export class DirectTransport implements Transport {
   }
 }
 
+const MAX_QUEUE_SIZE = 50
+
 /** Posts to a same-origin tunnel Route Handler with no credentials attached
  * — the tunnel route (see "bikeeper-nextjs-sdk/tunnel") injects the real
  * headers server-side before forwarding upstream. Used by the browser
- * client, where embedding a Bikeeper secret would be unsafe. */
+ * client, where embedding a Bikeeper secret would be unsafe.
+ *
+ * Also queues in-memory on failure (network blip beyond postJSON's own
+ * retries, or the browser genuinely offline) and flushes when the `online`
+ * event fires — covers the common "phone loses signal mid-session" case.
+ * A hard page reload during an outage still loses whatever was queued;
+ * this is an in-memory queue, not one persisted to storage. */
 export class TunnelTransport implements Transport {
   private readonly tunnelUrl: string
   private readonly timeoutMs: number
+  private readonly queue: WirePayload[] = []
+  private flushing = false
 
   constructor(opts: { tunnelUrl: string; timeoutMs?: number }) {
     this.tunnelUrl = opts.tunnelUrl
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        void this.flushQueue()
+      })
+    }
   }
 
   async send(item: WirePayload): Promise<void> {
-    await postJSON(this.tunnelUrl, item, {}, this.timeoutMs)
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      this.enqueue(item)
+      return
+    }
+    try {
+      await postJSON(this.tunnelUrl, item, {}, this.timeoutMs)
+    } catch (err) {
+      this.enqueue(item)
+      throw err
+    }
+  }
+
+  private enqueue(item: WirePayload): void {
+    this.queue.push(item)
+    if (this.queue.length > MAX_QUEUE_SIZE) this.queue.shift() // drop oldest, not newest
+  }
+
+  private async flushQueue(): Promise<void> {
+    if (this.flushing) return
+    this.flushing = true
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue[0] as WirePayload
+        try {
+          await postJSON(this.tunnelUrl, item, {}, this.timeoutMs)
+          this.queue.shift()
+        } catch {
+          break // still failing — stop draining, wait for the next `online` event
+        }
+      }
+    } finally {
+      this.flushing = false
+    }
   }
 }

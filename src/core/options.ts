@@ -28,6 +28,15 @@ export interface ServerOptions {
   /** Mutate or drop (return null) an event right before it's sent. */
   beforeSend?: (event: EventPayload) => EventPayload | null
   onError?: (err: unknown) => void
+  /** Registers `process.on('uncaughtException' | 'unhandledRejection', ...)`
+   * so errors thrown outside any request context (a background timer, a
+   * fire-and-forget promise, anything withRouteHandler/withServerAction
+   * never wrapped) still get captured instead of crashing silently.
+   * Defaults to true. An uncaughtException is captured, flushed, then the
+   * process exits (Node's own guidance: the process is in an undefined
+   * state after one and must not keep running) — an unhandledRejection is
+   * only captured, since it's not fatal by Node's current default. */
+  captureUncaughtExceptions?: boolean
 }
 
 /** Options for the browser client — deliberately has NO credential fields.

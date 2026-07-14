@@ -6,6 +6,7 @@ import { httpRequestInfo } from '../core/http-context'
 import type { ServerOptions } from '../core/options'
 import type { BreadcrumbInput, Scope } from '../core/scope'
 import { Span, type SpanOptions } from '../core/span'
+import { parseTraceparent } from '../core/trace-headers'
 import { DirectTransport } from '../core/transport'
 import type { Contexts, Level, UserInfo } from '../core/types'
 
@@ -14,6 +15,8 @@ export type { ServerOptions } from '../core/options'
 export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
+export { parseTraceparent } from '../core/trace-headers'
+export type { IncomingTraceContext } from '../core/trace-headers'
 export type { NextRequestInfo, RequestErrorContext } from '../core/instrumentation-types'
 
 const clientStore = globalSingleton<BikeeperClient>('__bikeeper_edge_client__')
@@ -152,6 +155,13 @@ export function getActiveSpan(): Span | undefined {
   return clientStore.get()?.getActiveSpan()
 }
 
+/** Headers to attach to an outgoing HTTP call so the receiving service —
+ * if it understands the same W3C traceparent format — continues this same
+ * trace instead of starting a disconnected one. */
+export function getTraceHeaders(): Record<string, string> {
+  return clientStore.get()?.getTraceHeaders() ?? {}
+}
+
 export function flush(timeoutMs?: number): Promise<void> {
   return clientStore.get()?.flush(timeoutMs) ?? Promise.resolve()
 }
@@ -167,9 +177,10 @@ export function withMiddleware<A extends unknown[], R>(middleware: (...args: A) 
     const c = requireClient()
     if (!c) return middleware(...args)
     const maybeReq = args[0]
+    const continueFrom = isFetchRequest(maybeReq) ? parseTraceparent(maybeReq.headers.get('traceparent')) : undefined
     return c.withScope((scope) => {
       if (isFetchRequest(maybeReq)) scope.setHTTPContext(httpRequestInfo(maybeReq))
-      return c.startSpan('http.middleware', { transactionSource: 'route' }, async () => {
+      return c.startSpan('http.middleware', { transactionSource: 'route', continueFrom }, async () => {
         try {
           return await middleware(...args)
         } catch (err) {

@@ -8,6 +8,7 @@ import { httpRequestInfo } from '../core/http-context'
 import type { ServerOptions } from '../core/options'
 import type { BreadcrumbInput, Scope } from '../core/scope'
 import { Span, type SpanOptions } from '../core/span'
+import { parseTraceparent } from '../core/trace-headers'
 import { DirectTransport } from '../core/transport'
 import type { Level, UserInfo } from '../core/types'
 import { nodeContexts } from './node-context'
@@ -17,6 +18,8 @@ export type { ServerOptions } from '../core/options'
 export type { BreadcrumbInput, Scope } from '../core/scope'
 export { Span } from '../core/span'
 export type { SpanOptions, TransactionSource } from '../core/span'
+export { parseTraceparent } from '../core/trace-headers'
+export type { IncomingTraceContext } from '../core/trace-headers'
 export type { NextRequestInfo, RequestErrorContext } from '../core/instrumentation-types'
 
 const clientStore = globalSingleton<BikeeperClient>('__bikeeper_server_client__')
@@ -27,27 +30,45 @@ const clientStore = globalSingleton<BikeeperClient>('__bikeeper_server_client__'
  * Bikeeper credentials and must never be imported from client code. */
 export function init(options: ServerOptions): void {
   if (clientStore.get()) return
-  clientStore.set(
-    new BikeeperClient({
-      transport: new DirectTransport({
-        endpoint: options.endpoint,
-        clientId: options.clientId,
-        clientSecret: options.clientSecret,
-        projectId: options.projectId,
-        timeoutMs: options.timeoutMs,
-      }),
-      hubStore: new AsyncHubStore(),
-      environment: options.environment,
-      release: options.release,
-      tracesSampleRate: options.tracesSampleRate,
-      enableLogging: options.enableLogging,
-      serverName: options.serverName,
-      debug: options.debug,
-      beforeSend: options.beforeSend,
-      onError: options.onError,
-      baseContexts: nodeContexts(),
+  const client = new BikeeperClient({
+    transport: new DirectTransport({
+      endpoint: options.endpoint,
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      projectId: options.projectId,
+      timeoutMs: options.timeoutMs,
     }),
-  )
+    hubStore: new AsyncHubStore(),
+    environment: options.environment,
+    release: options.release,
+    tracesSampleRate: options.tracesSampleRate,
+    enableLogging: options.enableLogging,
+    serverName: options.serverName,
+    debug: options.debug,
+    beforeSend: options.beforeSend,
+    onError: options.onError,
+    baseContexts: nodeContexts(),
+  })
+  clientStore.set(client)
+
+  if (options.captureUncaughtExceptions ?? true) {
+    registerProcessHandlers(client)
+  }
+}
+
+/** Registered at most once per process (init() itself is a no-op on a
+ * second call, so this never double-registers). uncaughtException exits
+ * after flushing — Node's own docs say the process must not keep running
+ * once one fires, since app state may be corrupted; unhandledRejection is
+ * only captured, matching Node's current (non-fatal-by-default) behavior. */
+function registerProcessHandlers(client: BikeeperClient): void {
+  process.on('uncaughtException', (err) => {
+    client.captureException(err, { tags: { mechanism: 'uncaughtException' } }, false)
+    void client.flush(2000).finally(() => process.exit(1))
+  })
+  process.on('unhandledRejection', (reason) => {
+    client.captureException(reason, { tags: { mechanism: 'unhandledRejection' } }, false)
+  })
 }
 
 function requireClient(): BikeeperClient | undefined {
@@ -157,6 +178,14 @@ export function getActiveSpan(): Span | undefined {
   return clientStore.get()?.getActiveSpan()
 }
 
+/** Headers to attach to an outgoing HTTP call (e.g. an axios/fetch call to
+ * another Bikeeper-instrumented service) so it continues this same trace
+ * instead of starting a disconnected one — see withRouteHandler, which
+ * reads this same header on the way in. */
+export function getTraceHeaders(): Record<string, string> {
+  return clientStore.get()?.getTraceHeaders() ?? {}
+}
+
 export function flush(timeoutMs?: number): Promise<void> {
   return clientStore.get()?.flush(timeoutMs) ?? Promise.resolve()
 }
@@ -174,11 +203,17 @@ export function withRouteHandler<A extends unknown[]>(
     const c = requireClient()
     if (!c) return handler(req, ...rest)
     const pathname = safePathname(req.url)
+    const continueFrom = parseTraceparent(req.headers.get('traceparent'))
     return c.withScope((scope) => {
       scope.setHTTPContext(httpRequestInfo(req))
       return c.startSpan(
         'http.server',
-        { description: `${req.method} ${pathname}`, tags: { 'http.method': req.method, 'http.route': pathname }, transactionSource: 'route' },
+        {
+          description: `${req.method} ${pathname}`,
+          tags: { 'http.method': req.method, 'http.route': pathname },
+          transactionSource: 'route',
+          continueFrom,
+        },
         async (span) => {
           try {
             const res = await handler(req, ...rest)
