@@ -1,6 +1,7 @@
 import 'server-only'
 
 import { AsyncHubStore } from '../core/async-hub-store'
+import { installConsoleBreadcrumbs, installFetchBreadcrumbs } from '../core/auto-breadcrumbs'
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
 import { SDK_NAME, SDK_VERSION } from '../core/constants'
 import { globalSingleton } from '../core/global-singleton'
@@ -53,6 +54,11 @@ export function init(options: ServerOptions): void {
 
   if (options.captureUncaughtExceptions ?? true) {
     registerProcessHandlers(client)
+  }
+
+  if (options.autoBreadcrumbs ?? true) {
+    installConsoleBreadcrumbs(client)
+    installFetchBreadcrumbs(client)
   }
 }
 

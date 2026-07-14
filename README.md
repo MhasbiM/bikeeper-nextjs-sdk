@@ -282,6 +282,30 @@ Next's own static file serving already does for `.next/static`).
 > but the dashboard itself still shows minified traces until that lands
 > server-side.
 
+## Automatic breadcrumbs
+
+`init()` installs breadcrumb auto-capture by default (`autoBreadcrumbs: true`)
+— no code changes needed, they just show up on the next captured event:
+
+| Source | Where | What it records |
+| --- | --- | --- |
+| `console.log/info/warn/error/debug` | client, server, edge | the formatted message, mapped to a matching breadcrumb level |
+| `fetch` | client, server, edge | method, url, status_code, duration_ms |
+| `XMLHttpRequest` | client only | same shape as fetch — covers libraries that use XHR instead |
+| History API (`pushState`/`replaceState`/`popstate`) | client only | client-side route changes (`from` → `to`) |
+
+```ts
+Bikeeper.init({ /* ... */, autoBreadcrumbs: false }) // opt out entirely
+```
+
+None of this generates extra network traffic on its own — breadcrumbs are
+just buffered (last 50) and attached to whatever event/message actually gets
+captured, the same as a manual `addBreadcrumb` call. The SDK's own
+event/log/transaction sends are never captured as fetch breadcrumbs — the
+transport holds its own reference to the native `fetch`, taken before
+`autoBreadcrumbs` ever wraps the global one, so events don't end up
+describing themselves.
+
 ## Scope: tags, user, breadcrumbs, extra context
 
 Every incoming request handled through `withRouteHandler`/`withServerAction`/
@@ -371,3 +395,8 @@ starts sending performance data.
 - `user`/`extra` fields are sent but currently dropped by the Bikeeper
   backend's ingest endpoint (see the Scope section above) — `tags`,
   `breadcrumbs`, and `http_request` are unaffected.
+- If your `next.config.js` sets `compiler.removeConsole`, Next strips
+  `console.*` calls at build time — before this SDK's console breadcrumbs
+  ever run. Either exclude the levels you want kept
+  (`removeConsole: { exclude: ['error', 'warn'] }`) or rely on the fetch/XHR/
+  navigation breadcrumbs instead, which aren't affected by that option.

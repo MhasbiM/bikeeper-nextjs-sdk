@@ -1,5 +1,6 @@
 'use client'
 
+import { installConsoleBreadcrumbs, installFetchBreadcrumbs } from '../core/auto-breadcrumbs'
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
 import { SDK_NAME, SDK_VERSION } from '../core/constants'
 import { globalSingleton } from '../core/global-singleton'
@@ -9,6 +10,7 @@ import type { BreadcrumbInput, Scope } from '../core/scope'
 import { Span, type SpanOptions } from '../core/span'
 import { TunnelTransport } from '../core/transport'
 import type { Level, UserInfo } from '../core/types'
+import { installNavigationBreadcrumbs, installXHRBreadcrumbs } from './auto-breadcrumbs'
 import { browserContexts } from './browser-context'
 
 export { BikeeperErrorBoundary } from './error-boundary'
@@ -33,21 +35,27 @@ const installedStore = globalSingleton<boolean>('__bikeeper_client_handlers_inst
  * unhandled promise rejections. */
 export function init(options: ClientOptions = {}): void {
   if (clientStore.get()) return
-  clientStore.set(
-    new BikeeperClient({
-      transport: new TunnelTransport({ tunnelUrl: options.tunnelUrl ?? DEFAULT_TUNNEL_URL }),
-      hubStore: new SimpleHubStore(),
-      environment: options.environment,
-      release: options.release,
-      tracesSampleRate: options.tracesSampleRate,
-      enableLogging: options.enableLogging,
-      debug: options.debug,
-      beforeSend: options.beforeSend,
-      onError: options.onError,
-      baseContexts: browserContexts(),
-    }),
-  )
+  const client = new BikeeperClient({
+    transport: new TunnelTransport({ tunnelUrl: options.tunnelUrl ?? DEFAULT_TUNNEL_URL }),
+    hubStore: new SimpleHubStore(),
+    environment: options.environment,
+    release: options.release,
+    tracesSampleRate: options.tracesSampleRate,
+    enableLogging: options.enableLogging,
+    debug: options.debug,
+    beforeSend: options.beforeSend,
+    onError: options.onError,
+    baseContexts: browserContexts(),
+  })
+  clientStore.set(client)
   installGlobalHandlers()
+
+  if (options.autoBreadcrumbs ?? true) {
+    installConsoleBreadcrumbs(client)
+    installFetchBreadcrumbs(client)
+    installXHRBreadcrumbs(client)
+    installNavigationBreadcrumbs(client)
+  }
 }
 
 function installGlobalHandlers(): void {

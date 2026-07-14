@@ -37,6 +37,11 @@ export interface ServerOptions {
    * state after one and must not keep running) — an unhandledRejection is
    * only captured, since it's not fatal by Node's current default. */
   captureUncaughtExceptions?: boolean
+  /** Wraps console.log/info/warn/error/debug and global fetch so every call
+   * also leaves a breadcrumb automatically (Sentry's Console + Http/Fetch
+   * integrations do the same) — no separate network send, they just enrich
+   * whatever event/message ends up captured. Defaults to true. */
+  autoBreadcrumbs?: boolean
 }
 
 /** Options for the browser client — deliberately has NO credential fields.
@@ -55,6 +60,10 @@ export interface ClientOptions {
   debug?: boolean
   beforeSend?: (event: EventPayload) => EventPayload | null
   onError?: (err: unknown) => void
+  /** Wraps console.*, global fetch, XMLHttpRequest, and the History API so
+   * console output, HTTP calls, and client-side navigations all leave
+   * breadcrumbs automatically. Defaults to true. */
+  autoBreadcrumbs?: boolean
 }
 
 export const DEFAULT_TUNNEL_URL = '/monitoring/bikeeper'

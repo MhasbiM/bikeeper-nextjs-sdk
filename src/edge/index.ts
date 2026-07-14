@@ -1,4 +1,5 @@
 import { SimpleHubStore } from '../core/simple-hub-store'
+import { installConsoleBreadcrumbs, installFetchBreadcrumbs } from '../core/auto-breadcrumbs'
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
 import { SDK_NAME, SDK_VERSION } from '../core/constants'
 import { globalSingleton } from '../core/global-singleton'
@@ -31,27 +32,31 @@ const EDGE_CONTEXTS: Contexts = { runtime: { name: 'edge' } }
  * "use client" code. */
 export function init(options: ServerOptions): void {
   if (clientStore.get()) return
-  clientStore.set(
-    new BikeeperClient({
-      transport: new DirectTransport({
-        endpoint: options.endpoint,
-        clientId: options.clientId,
-        clientSecret: options.clientSecret,
-        projectId: options.projectId,
-        timeoutMs: options.timeoutMs,
-      }),
-      hubStore: new SimpleHubStore(),
-      environment: options.environment,
-      release: options.release,
-      tracesSampleRate: options.tracesSampleRate,
-      enableLogging: options.enableLogging,
-      serverName: options.serverName,
-      debug: options.debug,
-      beforeSend: options.beforeSend,
-      onError: options.onError,
-      baseContexts: EDGE_CONTEXTS,
+  const client = new BikeeperClient({
+    transport: new DirectTransport({
+      endpoint: options.endpoint,
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      projectId: options.projectId,
+      timeoutMs: options.timeoutMs,
     }),
-  )
+    hubStore: new SimpleHubStore(),
+    environment: options.environment,
+    release: options.release,
+    tracesSampleRate: options.tracesSampleRate,
+    enableLogging: options.enableLogging,
+    serverName: options.serverName,
+    debug: options.debug,
+    beforeSend: options.beforeSend,
+    onError: options.onError,
+    baseContexts: EDGE_CONTEXTS,
+  })
+  clientStore.set(client)
+
+  if (options.autoBreadcrumbs ?? true) {
+    installConsoleBreadcrumbs(client)
+    installFetchBreadcrumbs(client)
+  }
 }
 
 function requireClient(): BikeeperClient | undefined {

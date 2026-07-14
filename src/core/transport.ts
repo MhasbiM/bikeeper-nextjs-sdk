@@ -36,6 +36,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Captured at module load — before init() ever runs and installs the
+// fetch-breadcrumbs auto-instrumentation, which wraps globalThis.fetch.
+// Using this instead of the ambient `fetch` identifier means the SDK's own
+// event/log/transaction sends never get intercepted by its own
+// instrumentation and show up as breadcrumbs describing themselves.
+const rawFetch: typeof fetch = typeof fetch !== 'undefined' ? fetch.bind(globalThis) : (undefined as unknown as typeof fetch)
+
 const MAX_ATTEMPTS = 3 // 1 initial + 2 retries
 const RETRY_BACKOFF_MS = 500 // 500ms, then 1000ms
 
@@ -43,7 +50,7 @@ async function postOnce(url: string, body: unknown, headers: Record<string, stri
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, {
+    const res = await rawFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
