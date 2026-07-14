@@ -1,5 +1,10 @@
+import pkg from '../../package.json'
+
 export const SDK_NAME = 'bikeeper-nextjs'
-export const SDK_VERSION = '0.1.0'
+// Derived from package.json instead of hardcoded — a hand-maintained
+// duplicate of the version drifted out of sync with every publish (this
+// stayed "0.1.0" through several real releases before being caught).
+export const SDK_VERSION: string = pkg.version
 
 export const DEFAULT_ENDPOINT = 'http://localhost:8080'
 export const DEFAULT_TIMEOUT_MS = 5000

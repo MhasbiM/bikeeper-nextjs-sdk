@@ -1,3 +1,4 @@
+import { SDK_NAME, SDK_VERSION } from './constants'
 import type { SDKInfo, SpanPayload, SpanStatus, Tag, TransactionPayload } from './types'
 import { newSpanId, newTraceId } from './util'
 import type { Transport } from './transport'
@@ -56,7 +57,7 @@ export class Span {
       this.txn = parent.txn
     } else {
       this.traceId = newTraceId()
-      this.txn = txn ?? { root: this, children: [], sampled: false, sdk: { name: 'bikeeper-nextjs', version: '0.1.0' } }
+      this.txn = txn ?? { root: this, children: [], sampled: false, sdk: { name: SDK_NAME, version: SDK_VERSION } }
     }
   }
 

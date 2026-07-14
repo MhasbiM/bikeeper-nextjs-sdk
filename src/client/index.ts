@@ -1,6 +1,7 @@
 'use client'
 
 import { BikeeperClient, LogEntryBuilder, type LogLevelName } from '../core/client'
+import { SDK_NAME, SDK_VERSION } from '../core/constants'
 import { globalSingleton } from '../core/global-singleton'
 import { DEFAULT_TUNNEL_URL, type ClientOptions } from '../core/options'
 import { SimpleHubStore } from '../core/simple-hub-store'
@@ -142,7 +143,7 @@ export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => 
   if (!c) {
     // Not initialized — still run fn (it's real app logic), just against a
     // detached span that's guaranteed to never send anything.
-    const noop = Span.createRoot(op, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+    const noop = Span.createRoot(op, opts, false, undefined, { name: SDK_NAME, version: SDK_VERSION })
     return Promise.resolve(fn(noop)).finally(() => noop.finish())
   }
   return c.startSpan(op, opts, fn)
@@ -152,7 +153,7 @@ export function startSpan<T>(op: string, opts: SpanOptions, fn: (span: Span) => 
 export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: Span) => T | Promise<T>): Promise<T> {
   const c = requireClient()
   if (!c) {
-    const noop = Span.createRoot(name, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+    const noop = Span.createRoot(name, opts, false, undefined, { name: SDK_NAME, version: SDK_VERSION })
     return Promise.resolve(fn(noop)).finally(() => noop.finish())
   }
   return c.startTransaction(name, opts, fn)
@@ -163,7 +164,7 @@ export function startTransaction<T>(name: string, opts: SpanOptions, fn: (span: 
  * request/response interceptors) — call span.finish() yourself when done. */
 export function startSpanManual(op: string, opts?: SpanOptions): Span {
   const c = requireClient()
-  if (!c) return Span.createRoot(op, opts, false, undefined, { name: 'bikeeper-nextjs', version: '0.1.0' })
+  if (!c) return Span.createRoot(op, opts, false, undefined, { name: SDK_NAME, version: SDK_VERSION })
   return c.startSpanManual(op, opts)
 }
 
